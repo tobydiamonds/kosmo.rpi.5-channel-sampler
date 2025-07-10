@@ -24,7 +24,7 @@ led_map = {
     12: 13
 }
 
-DEBOUNCE_TIME = 0.05
+DEBOUNCE_TIME = 0.001
 
 
 channel_buttons = {
@@ -49,7 +49,7 @@ for pin in led_pins:
     GPIO.output(pin, GPIO.LOW)
 
 # LED blink function
-def blink_led(pin, duration=0.2):
+def blink_led(pin, duration=0.05):
     GPIO.output(pin, GPIO.HIGH)
     time.sleep(duration)
     GPIO.output(pin, GPIO.LOW)
