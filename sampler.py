@@ -14,7 +14,10 @@ led_pins = [27,23,25,6,13]
 # Map triggers to sounds and LEDs
 sound_files = {
     17: "bank0/sound0.wav",
-    22: "bank0/sound1.wav"
+    22: "bank0/sound1.wav",
+    24: "bank0/sound2.wav",
+    5: "bank0/sound3.wav",
+    12: "bank0/sound5.wav"
 }
 led_map = {
     17: 27,
