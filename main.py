@@ -13,14 +13,16 @@ trigger_pins = [17,22,24,5,12]
 led_pins = [27,23,25,6,13]
 sample_pin = 19
 sample_led = 16
+sample_mode = False
+bank = 0
 
 # Map triggers to sounds and LEDs
 sound_files = {
-    17: "bank0/sound0.wav",
-    22: "bank0/sound1.wav",
-    24: "bank0/sound2.wav",
-    5: "bank0/sound3.wav",
-    12: "bank0/sound5.wav"
+    17: "sound0.wav",
+    22: "sound1.wav",
+    24: "sound2.wav",
+    5: "sound3.wav",
+    12: "sound4.wav"
 }
 led_map = {
     17: 27,
@@ -28,6 +30,13 @@ led_map = {
     24: 25,
     5: 6,
     12: 13
+}
+channel_map = {
+    17: 0,
+    22: 1,
+    24: 2,
+    5: 3,
+    12: 4
 }
 
 DEBOUNCE_TIME = 0.001
@@ -44,8 +53,7 @@ sample_button = DebouncedButton(pin=sample_pin, debounce_time=DEBOUNCE_TIME)
 
 sampler = Sampler()
 
-# Load sounds into memory
-sounds = {pin: pygame.mixer.Sound(file) for pin, file in sound_files.items()}
+
 
 # Setup GPIO
 GPIO.setmode(GPIO.BCM)
@@ -70,7 +78,15 @@ def play_and_blink(channel):
     sounds[channel].play()
     Thread(target=blink_led, args=(led_map[channel],)).start()
 
-sample_mode = False
+def load_sounds():
+    global sounds
+    sounds = {
+        pin: pygame.mixer.Sound(f"bank{bank}/sound{channel_map[pin]}.wav")
+        for pin in sound_files
+    }
+
+load_sounds()
+
 
 # Main loop
 try:
@@ -78,17 +94,32 @@ try:
     print("System ready. Press buttons or send triggers.")
     while True:
         if sample_button.pressed():
-            sample_mode = not sample_mode
-            GPIO.output(sample_led, GPIO.HIGH if sample_mode else GPIO.LOW)
-            print("Sample mode:", "ON" if sample_mode else "OFF")
+            if not sample_mode: #swith into sample mode
+                sample_mode = True
+                GPIO.output(sample_led, GPIO.HIGH)
+                print("Sample mode:", "ON")
+            else: #switch out of sample mode
+                sample_mode = False
+                GPIO.output(sample_led, GPIO.LOW)
+                print("Sample mode:", "OFF")
+                # Load sounds into memory
+                load_sounds()
+                
 
         if sample_mode:
             for pin in trigger_pins:
                 if channel_buttons[pin].pressed():
                     print(f"Trigger {pin} pressed in sample mode.")
-                    # Here you can add code to handle sample recording if needed   
-            
+                    channel = channel_map[pin]
+                    if not sampler.sampler_is_recording:
+                        bank = 1
+                        print(f"Starting recording on bank {bank} channel {channel}.")
+                        sampler.start_recording(bank, channel)
+                        
+
         else:
+
+
             for pin in trigger_pins:
                 if channel_buttons[pin].pressed():
                     play_and_blink(pin)
