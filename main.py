@@ -1,7 +1,7 @@
 import pygame
 import RPi.GPIO as GPIO
 import time
-from threading import Thread
+from threading import Thread, Event
 from debounced_button import DebouncedButton
 from sampler import Sampler
 
@@ -13,8 +13,12 @@ trigger_pins = [17,22,24,5,12]
 led_pins = [27,23,25,6,13]
 sample_pin = 19
 sample_led = 16
+
+# general vars
 sample_mode = False
 bank = 0
+recording_blink_threads = {}
+recording_blink_flags = {}
 
 # Map triggers to sounds and LEDs
 sound_files = {
@@ -74,9 +78,26 @@ def blink_led(pin, duration=0.05):
     GPIO.output(pin, GPIO.LOW)
 
 # Trigger callback
-def play_and_blink(channel):
-    sounds[channel].play()
-    Thread(target=blink_led, args=(led_map[channel],)).start()
+def play_and_blink(pin):
+    sounds[pin].play()
+    Thread(target=blink_led, args=(led_map[pin],)).start()
+
+def rapid_blink_led(pin, stop_flag, interval=0.1):
+    while not stop_flag.is_set():
+        GPIO.output(pin, GPIO.HIGH)
+        time.sleep(interval)
+        GPIO.output(pin, GPIO.LOW)
+        time.sleep(interval)
+
+def blink_while_sampling(pin):
+    channel = channel_map[pin]
+    stop_flag = Event()
+    recording_blink_flags[channel] = stop_flag
+    t = Thread(target=rapid_blink_led, args=(led_map[pin], stop_flag))
+    t.daemon = True
+    t.start()
+    recording_blink_threads[channel] = t
+
 
 def load_sounds():
     global sounds
@@ -85,7 +106,27 @@ def load_sounds():
         for pin in sound_files
     }
 
+def on_recording_completed(bank, channel):
+    print(f"Recording completed for bank {bank}, channel {channel}")
+    pin = list(channel_map.keys())[channel]
+    stop_flag = recording_blink_flags.get(channel)
+    if stop_flag:
+        stop_flag.set()
+    GPIO.output(led_map[pin], GPIO.LOW)
+    load_sounds()
+
+def on_recording_cancelled(bank, channel):
+    print(f"Recording cancelled for bank {bank}, channel {channel}")
+    pin = list(channel_map.keys())[channel]
+    stop_flag = recording_blink_flags.get(channel)
+    if stop_flag:
+        stop_flag.set()
+    GPIO.output(led_map[pin], GPIO.LOW)    
+
+sampler.set_on_recording_completed(on_recording_completed)
+sampler.set_on_recording_cancelled(on_recording_cancelled)
 load_sounds()
+
 
 
 # Main loop
@@ -97,29 +138,23 @@ try:
             if not sample_mode: #swith into sample mode
                 sample_mode = True
                 GPIO.output(sample_led, GPIO.HIGH)
-                print("Sample mode:", "ON")
             else: #switch out of sample mode
                 sample_mode = False
                 GPIO.output(sample_led, GPIO.LOW)
-                print("Sample mode:", "OFF")
-                # Load sounds into memory
-                load_sounds()
-                
+               
 
         if sample_mode:
             for pin in trigger_pins:
                 if channel_buttons[pin].pressed():
-                    print(f"Trigger {pin} pressed in sample mode.")
                     channel = channel_map[pin]
-                    if not sampler.sampler_is_recording:
+                    if not sampler.is_armed:
                         bank = 1
                         print(f"Starting recording on bank {bank} channel {channel}.")
+                        blink_while_sampling(pin)
                         sampler.start_recording(bank, channel)
-                        
-
+                    else:
+                        sampler.cancel_recording(bank, channel)
         else:
-
-
             for pin in trigger_pins:
                 if channel_buttons[pin].pressed():
                     play_and_blink(pin)

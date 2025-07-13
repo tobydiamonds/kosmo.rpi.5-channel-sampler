@@ -11,7 +11,6 @@ CHANNELS        = 1
 DEVICE_INDEX    = 1           # adjust to match your USB mic
 SAVE_DIR        = '/home/pi/kosmo-5ch-sampler/'  # on SD card
 COOLDOWN_SEC    = 0.1         # seconds to wait after stopping before re-arming
-TIMEOUT_SEC     = 0.5         # Stop recording if silence lasts this long
 # -----------------------------------
 
 class Sampler:
@@ -23,6 +22,24 @@ class Sampler:
         self.current_bank = -1
         self.current_channel = -1  # no channel selected
         self.recfile = None
+        self.rms = 0
+        self.armed = False
+        self._on_recording_completed = None
+        self._on_recodring_cancelled = None
+    
+    def set_on_recording_completed(self, callback):
+        self._on_recording_completed = callback
+
+    def _fire_recording_completed(self):
+        if self._on_recording_completed is not None:
+            self._on_recording_completed(self.current_bank, self.current_channel)  
+
+    def set_on_recording_cancelled(self, callback):      
+        self._on_recodring_cancelled = callback
+
+    def _fire_recording_cancelled(self):
+        if self._on_recodring_cancelled is not None:
+            self._on_recodring_cancelled(self.current_bank, self.current_channel)  
 
     def audio_thread(self):
         """Continuously read audio into a ring buffer and disk when recording."""
@@ -42,27 +59,28 @@ class Sampler:
                     if self.recfile:  # Only write if recfile is set
                         self.recfile.write(block)
                 self.audio_queue.put_nowait(block.copy())
+                buf = np.concatenate(list(self.audio_queue.queue))
+                self.rms = np.sqrt(np.mean(buf**2))
 
-    def get_rms(self):
-        if not self.audio_queue.empty():
-            buf = np.concatenate(list(self.audio_queue.queue))
-            return np.sqrt(np.mean(buf**2))        
-        else:
-            return 0.0
+    # def get_rms(self):
+    #     if not self.audio_queue.empty():
+    #         buf = np.concatenate(list(self.audio_queue.queue))
+    #         return np.sqrt(np.mean(buf**2))        
+    #     else:
+    #         return 0.0
 
     def button_monitor(self):
         """Start recording when input exceeds threshold, stop when it drops below, with cooldown and timeout."""
         recfile = None
         is_recording = False
         last_stop_time = 0
-        silence_start_time = None
  
         while not self.shutdown.is_set():
             now = time.time()
-            rms = self.get_rms()
-            print(is_recording, rms)
+           #rms = self.get_rms()
+           #print(is_recording, self.rms)
 
-            if rms > THRESHOLD and not is_recording and (now - last_stop_time) > COOLDOWN_SEC:
+            if self.rms > THRESHOLD and not is_recording and (now - last_stop_time) > COOLDOWN_SEC:
                 # Start recording
                 
 
@@ -78,25 +96,13 @@ class Sampler:
                 self.preroll_queue.queue.clear()
                 self.recording.set()
                 is_recording = True
-                silence_start_time = None  # Reset silence timer
 
             if is_recording:
-                if rms > THRESHOLD:
-                    silence_start_time = None  # Reset silence timer if sound returns
-                else:
-                    if silence_start_time is None:
-                        silence_start_time = now
-                    elif now - silence_start_time > TIMEOUT_SEC:
-                        # Stop recording due to timeout
-                        self.stop_recording()
-                        print("Silence timeout – recording stopped.")
-                        is_recording = False
-                        last_stop_time = now
-                        silence_start_time = None
-                # Also stop if sound drops below threshold (immediate stop)
-                if rms <= THRESHOLD and silence_start_time is None:
-                    self.stop_recording()
+                # stop if sound drops below threshold (immediate stop)
+                if self.rms < THRESHOLD:
                     print("Sound dropped below threshold – recording stopped.")
+                    self.stop_recording()
+                    
                     is_recording = False
                     last_stop_time = now
 
@@ -131,18 +137,41 @@ class Sampler:
         sf.write(filename, trimmed, samplerate)
         print(f"Trimmed silence: {filename} [{start}:{end}] (end threshold: {end_threshold})")        
 
-    def stop_recording(self):
-        """Stop recording and reset state."""
+    def cancel_recording(self, bank, channel):
+        """Cancel the current recording and reset state."""
+
+        if bank != self.current_bank or channel != self.current_channel:
+            return
+
         if self.recfile:
             self.recfile.close()
-
-            self.trim_silence(self.recfile.name, threshold=THRESHOLD)
-
             self.recfile = None
+        self.preroll_queue.queue.clear()
+        self.audio_queue.queue.clear()
         self.recording.clear()
         self.shutdown.set()
-        self.current_channel = -1  # Reset channel
-        print("Recording stopped.")
+        self.armed = False
+        self._fire_recording_cancelled()
+
+    def stop_recording(self):
+        """Stop recording and reset state."""
+        filename = None
+        if self.recfile:
+            filename = self.recfile.name
+            self.recfile.close()
+            self.recfile = None
+        self.preroll_queue.queue.clear()
+        self.audio_queue.queue.clear()            
+        self.recording.clear()
+        self.shutdown.set()
+        self.armed = False
+
+
+        time.sleep(1) # allow threads to exit gracefully
+        if not filename is None:
+            self.trim_silence(filename, threshold=THRESHOLD)    
+
+        self._fire_recording_completed()    
 
 
     def start_recording(self, bank, channel):
@@ -153,6 +182,8 @@ class Sampler:
         if channel < 0 or channel > 4   :
             raise ValueError("Invalid channel selected.")
         self.current_channel = channel
+
+        self.armed = True
 
         """ensure the bank folder exists"""
         bank_folder = os.path.join(SAVE_DIR, f"bank{self.current_bank}")
@@ -166,9 +197,8 @@ class Sampler:
         print("Sampler is armed. Input audio above threshold to start sampling...")
 
     @property
-    def sampler_is_recording(self):
-        """Returns True if currently recording, False otherwise."""
-        return self.recording.is_set()
+    def is_armed(self):
+        return self.armed
         
  
 
