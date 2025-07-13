@@ -128,9 +128,25 @@ def on_recording_cancelled(bank, channel):
 
 def on_serial_package_received(package):
     print(package)
+    if package['valid']:
+        if package['type'] == 'bank':
+            bank = package['value']
+            print(f"Bank set to {bank}")
+            load_sounds()
+        elif package['type'] == 'channel':
+            channel = package['value']
+            armed = package['armed']
+            mix_value = package['mix']
+            print(f"Channel {channel} armed: {armed}, mix value: {mix_value}")
+        elif package['type'] == 'sampler':
+            armed = package['armed']
+            threshold = package['threshold']
+            print(f"Sampler armed: {armed}, threshold: {threshold}")
+    else:
+        print(f"Invalid data received: {package['data']}")
 
 serial_client.set_on_package_recieved(on_serial_package_received)
-serial.begin()
+#serial.begin()
 
 sampler.set_on_recording_completed(on_recording_completed)
 sampler.set_on_recording_cancelled(on_recording_cancelled)

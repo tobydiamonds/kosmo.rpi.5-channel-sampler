@@ -9,7 +9,7 @@ class SerialClient:
     def __init__(self, device, baud=115200):
         self.shutdown = Event()
         self._on_package_recieved = None
-        self.serial_port = serial.Serial(device, baudrate=baud, timeout=TIMEOUT)
+        self.serial_port = None
 
 
 
@@ -37,13 +37,13 @@ class SerialClient:
         address = int(parts[0], 16)
 
         if len(parts) == 2 and address == 0x00:
-            return {'valid': True, 'bank': int(parts[1], 16)}
+            return {'valid': True, 'type': 'bank', 'value': int(parts[1], 16)}
         elif len(parts) == 3 and address >= 0x01 and address <= 0x05:
             two_parts = parts[1] + parts[2]
-            return {'valid': True, 'channel': address, 'mix_value': int(two_parts, 16) and b0000001111111111, 'armed': bool(int(two_parts, 16) & 0b1000000000000000)}
+            return {'valid': True, 'type': 'channel', 'value': address, 'mix': int(two_parts, 16) and b0000001111111111, 'armed': bool(int(two_parts, 16) & 0b1000000000000000)}
         elif len(parts) == 3 and address == 0x10:
             two_parts = parts[1] + parts[2]
-            return {'valid': True, 'threshold': int(two_parts, 16) & 0b0000001111111111, 'armed': bool(int(two_parts, 16) & 0b1000000000000000)}
+            return {'valid': True, 'type': 'sampler', 'threshold': int(two_parts, 16) & 0b0000001111111111, 'armed': bool(int(two_parts, 16) & 0b1000000000000000)}
         else:
             return {'valid': False, 'data': data}
 
@@ -58,6 +58,7 @@ class SerialClient:
                    
 
     def begin(self):
+        self.serial_port = serial.Serial(self.device, baudrate=self.baud, timeout=TIMEOUT)
         self.shutdown.clear()
         Thread(target=self.read_serial_thread, daemon=True).start()
         print(f"serial device {self.device} started at {self.baud} baud")
