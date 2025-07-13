@@ -4,6 +4,7 @@ import time
 from threading import Thread, Event
 from debounced_button import DebouncedButton
 from sampler import Sampler
+from serial_client import SerialClient
 
 # Setup
 pygame.mixer.init()
@@ -56,6 +57,7 @@ channel_buttons = {
 sample_button = DebouncedButton(pin=sample_pin, debounce_time=DEBOUNCE_TIME)
 
 sampler = Sampler()
+serial_client = SerialClient(device='/dev/ttyUSB0')
 
 
 
@@ -68,6 +70,7 @@ for pin in led_pins:
 
 GPIO.setup(sample_led, GPIO.OUT)
 GPIO.output(sample_led, GPIO.LOW)
+
 
 
 
@@ -122,6 +125,12 @@ def on_recording_cancelled(bank, channel):
     if stop_flag:
         stop_flag.set()
     GPIO.output(led_map[pin], GPIO.LOW)    
+
+def on_serial_package_received(package):
+    print(package)
+
+serial_client.set_on_package_recieved(on_serial_package_received)
+serial.begin()
 
 sampler.set_on_recording_completed(on_recording_completed)
 sampler.set_on_recording_cancelled(on_recording_cancelled)
