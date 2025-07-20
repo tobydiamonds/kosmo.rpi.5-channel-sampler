@@ -19,6 +19,7 @@ sample_led = 16
 # general vars
 sample_mode = False
 bank = 0
+bank_is_readonly = False
 recording_blink_threads = {}
 recording_blink_flags = {}
 recording_blink_intervals = {}
@@ -81,6 +82,7 @@ def blink_led(pin, duration=0.05):
     GPIO.output(pin, GPIO.HIGH)
     time.sleep(duration)
     GPIO.output(pin, GPIO.LOW)
+    time.sleep(duration)
 
 # Trigger callback
 def play_and_blink(pin):
@@ -109,12 +111,15 @@ def blink_while_sampling(pin):
 
 def load_sounds():
     global sounds
-    print(f"loading sounds from bank{bank}/")
+    global bank_is_readonly
     sounds = {}
     for pin in sound_files:
         filename = f"bank{bank}/sound{channel_map[pin]}.wav"
         if os.path.exists(filename):
             sounds[pin] = pygame.mixer.Sound(filename)
+    filename = f"bank{bank}/.readonly"
+    bank_is_readonly = os.path.exists(filename)
+    print(f"Bank {bank} loaded. Readonly: {bank_is_readonly}")
 
 
 def on_recording_completed(bank, channel):
@@ -186,7 +191,13 @@ try:
     print("System ready. Press buttons or send triggers.")
     while True:
         if sample_button.pressed():
-            if not sample_mode: #swith into sample mode
+            if bank_is_readonly:
+                sample_mode = False
+                print("Bank is read-only. Cannot enter sample mode.")
+                #Thread(target=blink_led, args=(sample_led,)).start()
+                blink_led(sample_led, duration=0.1)
+
+            elif not sample_mode: #swith into sample mode
                 sample_mode = True
                 GPIO.output(sample_led, GPIO.HIGH)
             else: #switch out of sample mode
