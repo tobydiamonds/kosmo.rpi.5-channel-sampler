@@ -1,20 +1,20 @@
-import pygame
 import os
+import atexit
+import signal
 import RPi.GPIO as GPIO
 import time
 from threading import Thread, Event
 from debounced_button import DebouncedButton
 from sampler import Sampler
 from serial_client import SerialClient
-from i2c_slave import I2CSlave
+from audio_engine import AudioEngine
 
 # Setup
-pygame.mixer.init()
 
 # GPIO pin configuration
 trigger_pins = [17,22,24,5,12]
 led_pins = [27,23,25,6,13]
-sample_pin = 19
+sample_pin = 26
 sample_led = 16
 
 # general vars
@@ -63,9 +63,26 @@ sample_button = DebouncedButton(pin=sample_pin, debounce_time=DEBOUNCE_TIME)
 
 sampler = Sampler()
 serial_client = SerialClient(device='/dev/ttyACM0')
-i2c_slave = I2CSlave(address=0x0A)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+engine = AudioEngine(samplerate=48000, blocksize=256)
+engine.set_direct_gain_global(0.6)
+engine.start()
 
+def _shutdown():
+    try:
+        engine.stop()
+    finally:
+        GPIO.cleanup()
 
+atexit.register(_shutdown)
+
+def _signal_shutdown(signum, frame):
+    _shutdown()
+    # Exit immediately to avoid double cleanup
+    os._exit(0)
+
+signal.signal(signal.SIGTERM, _signal_shutdown)
+signal.signal(signal.SIGHUP, _signal_shutdown)
 
 channel_to_pin = {v: k for k, v in channel_map.items()}
 # Setup GPIO
@@ -90,9 +107,9 @@ def blink_led(pin, duration=0.05):
 
 # Trigger callback
 def play_and_blink(pin):
-    if pin in sounds:
-        sounds[pin].stop()
-        sounds[pin].play()
+    ch = channel_map[pin]
+    if engine.has_sample(ch):
+        engine.trigger(ch)
         Thread(target=blink_led, args=(led_map[pin],)).start()
 
 def rapid_blink_led(pin, stop_flag):
@@ -114,13 +131,8 @@ def blink_while_sampling(pin):
 
 
 def load_sounds():
-    global sounds
     global bank_is_readonly
-    sounds = {}
-    for pin in sound_files:
-        filename = f"bank{bank}/sound{channel_map[pin]}.wav"
-        if os.path.exists(filename):
-            sounds[pin] = pygame.mixer.Sound(filename)
+    engine.reload_bank(bank, BASE_DIR)
     filename = f"bank{bank}/.readonly"
     bank_is_readonly = os.path.exists(filename)
     print(f"Bank {bank} loaded. Readonly: {bank_is_readonly}")
@@ -164,17 +176,14 @@ def on_serial_package_received(package):
             print(f"Bank set to {bank}")
             load_sounds()
             serial_client.send(0x00, bank)
-            i2c_slave.set_reply_payload(bank, current_mixes)
         elif package['type'] == 'channel':
             channel = package['value']
             armed = package['armed']
             mix_value = package['mix']
-            pin = list(channel_map.keys())[channel-1]
-            if pin in sounds:
-                sounds[pin].set_volume(mix_value / 1023.0)
+            ch_idx = channel - 1
+            engine.set_mix(ch_idx, (mix_value or 0) / 1023.0)
             # update current mixes and prime I2C reply
-            current_mixes[channel - 1] = mix_value
-            i2c_slave.set_reply_payload(bank, current_mixes)
+            current_mixes[ch_idx] = mix_value
         elif package['type'] == 'sampler':
             armed = package['armed']
             threshold = package['threshold']
@@ -185,45 +194,13 @@ def on_serial_package_received(package):
 
 serial_client.set_on_package_recieved(on_serial_package_received)
 serial_client.begin()
-
-def on_i2c_payload_received(payload):
-    global bank
-    global current_mixes
-    new_bank = int(payload.get('bank', bank))
-    mixes = payload.get('mixes', [])
-    if new_bank != bank:
-        bank = new_bank
-        print(f"[I2C] Bank set to {bank}")
-        load_sounds()
-        serial_client.send(0x00, bank)
-        i2c_slave.set_reply_payload(bank, current_mixes)
-
-    if mixes and len(mixes) == 5:
-        for ch, mix_val in enumerate(mixes):
-            pin = channel_to_pin.get(ch)
-            if pin is not None and pin in sounds:
-                vol = max(0.0, min(1.0, (mix_val or 0) / 1023.0))
-                sounds[pin].set_volume(vol)
-            address = 0x01 + ch
-            serial_client.send(address, int(mix_val))
-        # store and prime reply
-        current_mixes = [int(m) for m in mixes]
-        i2c_slave.set_reply_payload(bank, current_mixes)
-            
-
-i2c_slave.set_on_payload_received(on_i2c_payload_received)
-try:
-    i2c_slave.begin()
-    print("I2C slave started at address 0x0A")
-except Exception as e:
-    print(f"Failed to start I2C slave: {e}")
+          
 
 sampler.set_on_recording_completed(on_recording_completed)
 sampler.set_on_recording_cancelled(on_recording_cancelled)
 sampler.set_on_sound_detected(on_sound_detected)
 sampler.set_on_post_processing_started(on_sound_processing_started)
 load_sounds()
-i2c_slave.set_reply_payload(bank, current_mixes)
 
 
 # Main loop
@@ -266,8 +243,7 @@ try:
         time.sleep(0.005)
 
 except KeyboardInterrupt:
-    GPIO.cleanup()
     try:
-        i2c_slave.end()
-    except Exception:
-        pass
+        engine.stop()
+    finally:
+        GPIO.cleanup()
